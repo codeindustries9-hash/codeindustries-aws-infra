@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Code Industries - Production Auto Scaling Group with Launch Template'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: codeindustries
+
+  Environment:
+    Type: String
+    Default: prod
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI ID from SSM
+
+  MinInstances:
+    Type: Number
+    Default: 2
+
+  MaxInstances:
+    Type: Number
+    Default: 4
+
+  DesiredInstances:
+    Type: Number
+    Default: 2
+
+  KeyPairName:
+    Type: String
+    Default: ''
+    Description: EC2 Key Pair name for SSH (optional)
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+
+Resources:
+
+  # ─── IAM ROLE FOR EC2 ──────────────────────────────────────────────────────
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/${Environment}/*'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::ddj-uploads-prod/*'
+                  - !Sub 'arn:aws:s3:::ddj-secure-uploads/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ec2-role'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-${Environment}-ec2-profile'
+      Roles:
+        - !Ref EC2Role
+
+  # ─── LAUNCH TEMPLATE ───────────────────────────────────────────────────────
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${ProjectName}-${Environment}-lt'
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-EC2SecurityGroupId'
+        KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+
+            # Update system
+            dnf update -y
+
+            # Install Apache, PHP 8.1, Git, MySQL client
+            dnf install -y httpd git mysql
+
+            # Enable PHP 8.1
+            dnf install -y php8.1 php8.1-fpm php8.1-mysqlnd php8.1-gd php8.1-mbstring \
+              php8.1-xml php8.1-curl php8.1-zip php8.1-opcache php8.1-pdo
+
+            # Enable and start services
+            systemctl enable httpd php-fpm
+            systemctl start httpd php-fpm
+
+            # Apache config — AllowOverride All for .htaccess
+            sed -i 's/AllowOverride None/AllowOverride All/g' /etc/httpd/conf/httpd.conf
+
+            # Set DirectoryIndex to index.php
+            echo "DirectoryIndex index.php index.html" >> /etc/httpd/conf.d/php.conf
+
+            # CloudWatch agent
+            dnf install -y amazon-cloudwatch-agent
+            systemctl enable amazon-cloudwatch-agent
+            systemctl start amazon-cloudwatch-agent
+
+            # Signal success
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource ASG --region ${AWS::Region}
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${ProjectName}-${Environment}-ec2'
+              - Key: Environment
+                Value: !Ref Environment
+
+  # ─── AUTO SCALING GROUP ────────────────────────────────────────────────────
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref DesiredInstances
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        WaitOnResourceSignals: true
+        PauseTime: PT10M
+    Properties:
+      AutoScalingGroupName: !Sub '${ProjectName}-${Environment}-asg'
+      MinSize: !Ref MinInstances
+      MaxSize: !Ref MaxInstances
+      DesiredCapacity: !Ref DesiredInstances
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-PrivateSubnet1Id'
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-PrivateSubnet2Id'
+      TargetGroupARNs:
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-TargetGroupArn'
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ec2'
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+
+  # ─── SCALING POLICY ────────────────────────────────────────────────────────
+  CPUScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref ASG
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 75.0
+
+# ─── OUTPUTS ─────────────────────────────────────────────────────────────────
+Outputs:
+  ASGName:
+    Description: Auto Scaling Group Name
+    Value: !Ref ASG
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ASGName'
+
+  EC2RoleArn:
+    Description: EC2 IAM Role ARN
+    Value: !GetAtt EC2Role.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EC2RoleArn'
+
+  LaunchTemplateId:
+    Description: Launch Template ID
+    Value: !Ref LaunchTemplate
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-LaunchTemplateId'

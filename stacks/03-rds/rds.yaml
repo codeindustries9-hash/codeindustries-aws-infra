@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Code Industries - Production RDS MySQL Multi-AZ'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: codeindustries
+
+  Environment:
+    Type: String
+    Default: prod
+
+  DBName:
+    Type: String
+    Default: ncjobcarirlive
+    Description: Database name
+
+  DBUsername:
+    Type: String
+    Default: ddj_app_user
+    Description: Master username
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Master password — provide at deploy time, never store in code
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS instance type
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: Storage in GB
+
+Resources:
+
+  # ─── DB SUBNET GROUP ───────────────────────────────────────────────────────
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${ProjectName}-${Environment}-db-subnet-group'
+      DBSubnetGroupDescription: Private subnets for RDS
+      SubnetIds:
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-PrivateSubnet1Id'
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-PrivateSubnet2Id'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-db-subnet-group'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ─── RDS INSTANCE ──────────────────────────────────────────────────────────
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-${Environment}-mysql'
+      DBName: !Ref DBName
+      Engine: mysql
+      EngineVersion: '8.0'
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-RDSSecurityGroupId'
+      MultiAZ: true
+      PubliclyAccessible: false
+      DeletionProtection: true
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'mon:04:00-mon:05:00'
+      EnableCloudwatchLogsExports:
+        - error
+        - slowquery
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-rds'
+        - Key: Environment
+          Value: !Ref Environment
+
+# ─── OUTPUTS ─────────────────────────────────────────────────────────────────
+Outputs:
+  DBInstanceId:
+    Description: RDS Instance ID
+    Value: !Ref DBInstance
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-DBInstanceId'
+
+  DBEndpoint:
+    Description: RDS Endpoint
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-DBEndpoint'
+
+  DBPort:
+    Description: RDS Port
+    Value: !GetAtt DBInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-DBPort'

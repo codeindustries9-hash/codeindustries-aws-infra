@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Code Industries - Dev Single EC2 Instance'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: codeindustries
+
+  Environment:
+    Type: String
+    Default: staging
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+
+  # IAM ROLE
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - arn:aws:s3:::ddj-uploads-dev/*
+                  - arn:aws:s3:::ddj-secure-uploads/*
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-${Environment}-ec2-profile'
+      Roles:
+        - !Ref EC2Role
+
+  # EC2 INSTANCE
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SubnetId:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-PrivateSubnet1Id'
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-EC2SecurityGroupId'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          dnf install -y aws-cfn-bootstrap
+          dnf update -y
+          dnf install -y httpd git
+          dnf install -y php php-fpm php-mysqlnd php-gd php-mbstring \
+            php-xml php-curl php-zip php-opcache php-pdo
+          dnf install -y mariadb105
+
+          systemctl enable httpd php-fpm
+          systemctl start httpd php-fpm
+
+          sed -i 's/AllowOverride None/AllowOverride All/g' /etc/httpd/conf/httpd.conf
+
+          dnf install -y amazon-cloudwatch-agent
+          systemctl enable amazon-cloudwatch-agent
+          systemctl start amazon-cloudwatch-agent
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ec2'
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-InstanceId'
+
+  PrivateIp:
+    Description: EC2 Private IP
+    Value: !GetAtt EC2Instance.PrivateIp
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-PrivateIp'

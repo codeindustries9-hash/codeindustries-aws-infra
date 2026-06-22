@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Code Industries - Production CloudWatch Alarms, Dashboard and SNS Alerts'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: codeindustries
+
+  Environment:
+    Type: String
+    Default: prod
+
+  AlertEmail:
+    Type: String
+    Description: Email address for CloudWatch alerts
+    Default: ''
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+
+  # SNS TOPIC
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alerts'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alerts'
+        - Key: Environment
+          Value: !Ref Environment
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # EC2 CPU ALARM
+  EC2CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ec2-cpu-high'
+      AlarmDescription: EC2 CPU utilization above 80%
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ASGName'
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # RDS CPU ALARM
+  RDSCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-rds-cpu-high'
+      AlarmDescription: RDS CPU utilization above 80%
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            Fn::ImportValue: !Sub '${ProjectName}-${Environment}-DBInstanceId'
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # RDS FREE STORAGE ALARM
+  RDSStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-rds-storage-low'
+      AlarmDescription: RDS free storage below 5GB
+      MetricName: FreeStorageSpace
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5368709120
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            Fn::ImportValue: !Sub '${ProjectName}-${Environment}-DBInstanceId'
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # ALB 5XX ERROR ALARM
+  ALB5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-5xx-high'
+      AlarmDescription: ALB 5xx errors above 10 per minute
+      MetricName: HTTPCode_ELB_5XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value:
+            Fn::Select:
+              - 1
+              - Fn::Split:
+                  - 'loadbalancer/'
+                  - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ALBArn'
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # ALB UNHEALTHY HOSTS ALARM
+  UnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-unhealthy-hosts'
+      AlarmDescription: One or more EC2 targets unhealthy
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            Fn::Select:
+              - 1
+              - Fn::Split:
+                  - 'targetgroup/'
+                  - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-TargetGroupArn'
+        - Name: LoadBalancer
+          Value:
+            Fn::Select:
+              - 1
+              - Fn::Split:
+                  - 'loadbalancer/'
+                  - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ALBArn'
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # CLOUDWATCH DASHBOARD
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "EC2 CPU Utilization",
+                "region": "${AWS::Region}",
+                "metrics": [["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${ProjectName}-${Environment}-asg"]],
+                "period": 300,
+                "stat": "Average",
+                "view": "timeSeries",
+                "annotations": { "horizontal": [] }
+              }
+            },
+            {
+              "type": "metric",
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "RDS CPU Utilization",
+                "region": "${AWS::Region}",
+                "metrics": [["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "${ProjectName}-${Environment}-mysql"]],
+                "period": 300,
+                "stat": "Average",
+                "view": "timeSeries",
+                "annotations": { "horizontal": [] }
+              }
+            },
+            {
+              "type": "metric",
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "RDS Free Storage",
+                "region": "${AWS::Region}",
+                "metrics": [["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", "${ProjectName}-${Environment}-mysql"]],
+                "period": 300,
+                "stat": "Average",
+                "view": "timeSeries",
+                "annotations": { "horizontal": [] }
+              }
+            },
+            {
+              "type": "metric",
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "ALB Request Count",
+                "region": "${AWS::Region}",
+                "metrics": [["AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ProjectName}-${Environment}-alb"]],
+                "period": 60,
+                "stat": "Sum",
+                "view": "timeSeries",
+                "annotations": { "horizontal": [] }
+              }
+            }
+          ]
+        }
+
+Outputs:
+  AlertTopicArn:
+    Description: SNS Alert Topic ARN
+    Value: !Ref AlertTopic
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AlertTopicArn'
+
+  DashboardUrl:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ProjectName}-${Environment}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-DashboardUrl'

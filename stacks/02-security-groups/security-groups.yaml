@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Code Industries - Production Security Groups for ALB, EC2, and RDS'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: codeindustries
+
+  Environment:
+    Type: String
+    Default: prod
+
+Resources:
+
+  # ─── ALB SECURITY GROUP ────────────────────────────────────────────────────
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-sg-alb'
+      GroupDescription: Allow HTTP and HTTPS from internet
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS from internet
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-sg-alb'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ─── EC2 SECURITY GROUP ────────────────────────────────────────────────────
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-sg-ec2'
+      GroupDescription: Allow traffic from ALB only
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: HTTP from ALB only
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: HTTPS from ALB only
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-sg-ec2'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ─── RDS SECURITY GROUP ────────────────────────────────────────────────────
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-sg-rds'
+      GroupDescription: Allow MySQL from EC2 only
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+          Description: MySQL from EC2 only
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-sg-rds'
+        - Key: Environment
+          Value: !Ref Environment
+
+# ─── OUTPUTS ─────────────────────────────────────────────────────────────────
+Outputs:
+  ALBSecurityGroupId:
+    Description: ALB Security Group ID
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ALBSecurityGroupId'
+
+  EC2SecurityGroupId:
+    Description: EC2 Security Group ID
+    Value: !Ref EC2SecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EC2SecurityGroupId'
+
+  RDSSecurityGroupId:
+    Description: RDS Security Group ID
+    Value: !Ref RDSSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-RDSSecurityGroupId'

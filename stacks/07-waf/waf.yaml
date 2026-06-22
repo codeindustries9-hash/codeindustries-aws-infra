@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Code Industries - Production WAF v2 on ALB'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: codeindustries
+
+  Environment:
+    Type: String
+    Default: prod
+
+  RateLimitPerIP:
+    Type: Number
+    Default: 2000
+    Description: Max requests per IP per 5 minutes
+
+Resources:
+
+  # ─── WAF WEB ACL ───────────────────────────────────────────────────────────
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-waf'
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${ProjectName}-${Environment}-waf'
+        SampledRequestsEnabled: true
+      Rules:
+
+        # Core Rule Set
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRuleSet
+            SampledRequestsEnabled: true
+
+        # Known Bad Inputs
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: KnownBadInputs
+            SampledRequestsEnabled: true
+
+        # SQL Injection
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 3
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: SQLiRuleSet
+            SampledRequestsEnabled: true
+
+        # PHP Application
+        - Name: AWSManagedRulesPHPRuleSet
+          Priority: 4
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesPHPRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: PHPRuleSet
+            SampledRequestsEnabled: true
+
+        # IP Reputation
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 5
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: IPReputationList
+            SampledRequestsEnabled: true
+
+        # Rate Limiting
+        - Name: RateLimitPerIP
+          Priority: 6
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimitPerIP
+              AggregateKeyType: IP
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimit
+            SampledRequestsEnabled: true
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-waf'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ─── ASSOCIATE WAF WITH ALB ────────────────────────────────────────────────
+  WAFAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ALBArn'
+      WebACLArn: !GetAtt WebACL.Arn
+
+# ─── OUTPUTS ─────────────────────────────────────────────────────────────────
+Outputs:
+  WebACLArn:
+    Description: WAF Web ACL ARN
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-WebACLArn'
+
+  WebACLId:
+    Description: WAF Web ACL ID
+    Value: !Ref WebACL
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-WebACLId'

@@ -42,7 +42,7 @@ Conditions:
 
 Resources:
 
-  # ─── IAM ROLE FOR EC2 ──────────────────────────────────────────────────────
+  # IAM ROLE FOR EC2
   EC2Role:
     Type: AWS::IAM::Role
     Properties:
@@ -90,7 +90,7 @@ Resources:
       Roles:
         - !Ref EC2Role
 
-  # ─── LAUNCH TEMPLATE ───────────────────────────────────────────────────────
+  # LAUNCH TEMPLATE
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -108,25 +108,28 @@ Resources:
             #!/bin/bash
             set -e
 
+            # Install cfn-bootstrap first
+            dnf install -y aws-cfn-bootstrap
+
             # Update system
             dnf update -y
 
-            # Install Apache, PHP 8.1, Git, MySQL client
-            dnf install -y httpd git mysql
+            # Install Apache and Git
+            dnf install -y httpd git
 
-            # Enable PHP 8.1
-            dnf install -y php8.1 php8.1-fpm php8.1-mysqlnd php8.1-gd php8.1-mbstring \
-              php8.1-xml php8.1-curl php8.1-zip php8.1-opcache php8.1-pdo
+            # Install PHP 8.1
+            dnf install -y php php-fpm php-mysqlnd php-gd php-mbstring \
+              php-xml php-curl php-zip php-opcache php-pdo
+
+            # Install MySQL client
+            dnf install -y mariadb105
 
             # Enable and start services
             systemctl enable httpd php-fpm
             systemctl start httpd php-fpm
 
-            # Apache config — AllowOverride All for .htaccess
+            # Apache config
             sed -i 's/AllowOverride None/AllowOverride All/g' /etc/httpd/conf/httpd.conf
-
-            # Set DirectoryIndex to index.php
-            echo "DirectoryIndex index.php index.html" >> /etc/httpd/conf.d/php.conf
 
             # CloudWatch agent
             dnf install -y amazon-cloudwatch-agent
@@ -143,7 +146,7 @@ Resources:
               - Key: Environment
                 Value: !Ref Environment
 
-  # ─── AUTO SCALING GROUP ────────────────────────────────────────────────────
+  # AUTO SCALING GROUP
   ASG:
     Type: AWS::AutoScaling::AutoScalingGroup
     CreationPolicy:
@@ -179,7 +182,7 @@ Resources:
           Value: !Ref Environment
           PropagateAtLaunch: true
 
-  # ─── SCALING POLICY ────────────────────────────────────────────────────────
+  # SCALING POLICY
   CPUScalingPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
@@ -190,7 +193,6 @@ Resources:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: 75.0
 
-# ─── OUTPUTS ─────────────────────────────────────────────────────────────────
 Outputs:
   ASGName:
     Description: Auto Scaling Group Name
